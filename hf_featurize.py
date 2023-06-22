@@ -2,6 +2,9 @@
 
 """
     hf_featurize.py
+    
+    ?? Is there a better / faster way to do this natively w/ huggingface?
+        - Want the simplest code that can extract embeddings for (model, dataset) pairs as simply as possible
 """
 
 import os
@@ -15,14 +18,23 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from transformers import AutoFeatureExtractor, AutoModelForImageClassification
+from transformers import (
+    AutoFeatureExtractor,
+    AutoModelForImageClassification,
+    CLIPFeatureExtractor,
+    CLIPModel
+)
+
 from datasets import load_dataset, Image, ClassLabel
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model',   type=str, default="microsoft/resnet-50")
-    parser.add_argument('--dataset', type=str, default="pcuenq/oxford-pets")
-    parser.add_argument('--split',   type=str, default="train")
+
+    parser.add_argument('--dataset',   type=str, default="pcuenq/oxford-pets")
+    parser.add_argument('--split',     type=str, default="train")
+    parser.add_argument('--img_field', type=str, default="image")
+    parser.add_argument('--lab_field', type=str, default="label")
     args = parser.parse_args()
     
     args.outdir = os.path.join('output', args.dataset, args.split, args.model)
@@ -36,22 +48,11 @@ args = parse_args()
 # --
 # Helper to unwrap an HF dataset?  I'm sure there's a better way
 
-def normalize_dataset_keys(dataset):
-    img_cols = [k for k,v in dataset.features.items() if isinstance(v, Image)]
-    lab_cols = [k for k,v in dataset.features.items() if isinstance(v, ClassLabel)]
-    
-    assert len(img_cols) == 1
-    assert len(lab_cols) == 1
-    
-    dataset = dataset.rename_columns({img_cols[0]:"img", lab_cols[0]:"lab"})
-    return dataset
-
-
 class HFDataset:
     def __init__(self, dataset, transform=None):
         self.transform = transform
-        self.dataset   = normalize_dataset_keys(dataset)
-    
+        self.dataset   = dataset
+        
     def __len__(self):
         return len(self.dataset)
     
@@ -69,28 +70,39 @@ class HFDataset:
 # --
 # Load model
 
-print('loading model...', file=sys.stderr)
-tfms       = AutoFeatureExtractor.from_pretrained(args.model)
-model      = AutoModelForImageClassification.from_pretrained(args.model)
-model      = model.eval()
-model      = model.cuda()
+print('hf_featurize: loading model...', file=sys.stderr)
+
+# <<
+if 'clip' not in args.model:
+    tfms  = AutoFeatureExtractor.from_pretrained(args.model)
+    model = AutoModelForImageClassification.from_pretrained(args.model)
+    assert hasattr(model, 'classifier')
+    model.classifier = nn.Sequential()
+else:
+    tfms  = CLIPFeatureExtractor.from_pretrained(args.model)
+    model = CLIPModel.from_pretrained(args.model).vision_model
+# >>
+
+model = model.eval()
+model = model.cuda()
 
 # !! TODO: Getting the "features" from different models might require dropping different heads w/ different names
-assert hasattr(model, 'classifier')
-model.classifier = nn.Sequential()
 
 # --
 # Load dataset
 
-print('loading dataset....', file=sys.stderr)
+print('hf_featurize: loading dataset....', file=sys.stderr)
 hf_dataset = load_dataset(args.dataset)
-ds_train   = HFDataset(hf_dataset[args.split], transform=tfms)
+hf_dataset = hf_dataset[args.split]
+hf_dataset = hf_dataset.rename_columns({args.img_field:"img", args.lab_field:"lab"})
+
+ds_train   = HFDataset(hf_dataset, transform=tfms)
 dl_train   = DataLoader(ds_train, batch_size=128, num_workers=8)
 
 # --
 # Run
 
-print('extracting features...', file=sys.stderr)
+print('hf_featurize: extracting features...', file=sys.stderr)
 
 X = []
 y = []
@@ -98,7 +110,14 @@ y = []
 with torch.inference_mode():
     for xx, yy in tqdm(dl_train, total=len(dl_train)):
         xx  = xx.cuda()
-        enc = model(xx).logits
+        
+        # <<
+        if 'clip' not in args.model:
+            enc = model(xx).logits
+        else:
+            enc = model(xx).pooler_output
+        # >>
+        
         enc = enc.cpu().numpy() # not logits ...
         
         X.append(enc.squeeze())
