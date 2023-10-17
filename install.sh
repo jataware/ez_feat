@@ -14,5 +14,6 @@ conda activate ez_feat_env
 pip install Pillow
 pip install transformers
 pip install datasets
+pip install torch torchvision torchaudio
 
 # pytorch version?

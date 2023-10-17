@@ -27,6 +27,8 @@ from transformers import (
 
 from datasets import load_dataset, Image, ClassLabel
 
+# device = 
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model',   type=str, default="microsoft/resnet-50")
@@ -84,7 +86,7 @@ else:
 # >>
 
 model = model.eval()
-model = model.cuda()
+model = model.to(device)
 
 # !! TODO: Getting the "features" from different models might require dropping different heads w/ different names
 
@@ -109,7 +111,7 @@ y = []
 
 with torch.inference_mode():
     for xx, yy in tqdm(dl_train, total=len(dl_train)):
-        xx  = xx.cuda()
+        xx  = xx.to(device)
         
         # <<
         if 'clip' not in args.model:
