@@ -31,7 +31,9 @@ from datasets import load_dataset
 # --
 # Helpers
 
-def get_device():
+def get_device(force=None):
+    if force is not None: return force
+
     if torch.cuda.is_available():
         return 'cuda'
     elif torch.backends.mps.is_available():
@@ -39,6 +41,22 @@ def get_device():
     else:
         return 'cpu'
 
+def img_safeload(fname, dim=32):
+    try:
+        img = Image.open(fname).convert('RGB')
+        bad = False
+    except:
+        img = Image.new('RGB', (dim, dim))
+        bad = True
+
+    if (img.size[0] == 1) or (img.size[1] == 1):
+        img = Image.new('RGB', (dim, dim))
+        bad = True
+    
+    return img, bad
+
+# --
+# Datasets
 
 class HFDataset(Dataset):
     def __init__(self, dataset, transform=None):
@@ -58,7 +76,7 @@ class HFDataset(Dataset):
         
         return img, lab
 
-class FlatDataset(Dataset):
+class EZDataset(Dataset):
     def __init__(self, fnames, transform):
         self.transform = transform
         self.fnames    = fnames
@@ -67,16 +85,16 @@ class FlatDataset(Dataset):
         return len(self.fnames)
     
     def __getitem__(self, idx):
-        fname = self.fnames[idx]
-        img   = Image.open(fname)
-        img   = img.convert('RGB')
+        fname    = self.fnames[idx]
+        img, bad = img_safeload(fname)
+
         if self.transform:
             img = self.transform(img, return_tensors='pt')['pixel_values'][0]
         
-        return img, [] # featurize expects metadata
+        return img, [bad]
 
 
-def hf_load_model(model):
+def hf_load_model(model, with_text_encoder=False):
     print('hf_load_model: start', file=sys.stderr)
 
     # <<
@@ -103,10 +121,10 @@ def hf_load_dataset(dataset, split, img_field, lab_field):
     return hf_dataset
 
 
-def featurize(model, model_name, ds):
+def featurize(model, model_name, ds, progress_bar=tqdm, force_device=None):
     print('featurize: start', file=sys.stderr)
 
-    device = get_device()
+    device = get_device(force=force_device)
     model  = model.to(device)
     
     dl     = DataLoader(ds, batch_size=128)
@@ -115,7 +133,7 @@ def featurize(model, model_name, ds):
     M = [] # metadata
 
     with torch.inference_mode():
-        for xx, *mm in tqdm(dl, total=len(dl)):
+        for xx, *mm in progress_bar(dl, total=len(dl)):
             xx  = xx.to(device)
             
             # <<
@@ -132,6 +150,7 @@ def featurize(model, model_name, ds):
             M += mm
 
     X = np.row_stack(X)
+    M = np.column_stack(M)
 
     return X, M
 
