@@ -26,7 +26,10 @@ from transformers import (
     CLIPModel
 )
 
-from datasets import load_dataset
+try:
+    from datasets import load_dataset
+except:
+    print('!! cannot load `datasets` library')
 
 # --
 # Helpers
